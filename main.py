@@ -10,7 +10,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from engine import config, cache, ComfyClient, ImageProcessor, build_workflow
+from engine import config, cache, ComfyClient, ImageProcessor, build_workflow, save_inputs_for_debug
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -28,6 +28,10 @@ LOGGING_CONFIG = {
             "format": "%(asctime)s [%(levelname)s] System: %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S"
         },
+        "routes_formatter": {
+            "format": "%(asctime)s [%(levelname)s] Routes: %(message)s",
+            "datefmt": "%Y-%m-%d %H:%M:%S"
+        },
     },
     "handlers": {
         "default": {
@@ -40,18 +44,22 @@ LOGGING_CONFIG = {
             "class": "logging.StreamHandler",
             "stream": "ext://sys.stdout",
         },
+        "routes_handler": {
+            "formatter": "routes_formatter",
+            "class": "logging.StreamHandler",
+            "stream": "ext://sys.stdout",
+        },
     },
     "loggers": {
         "API": {"handlers": ["default"], "level": "INFO"},
         "Engine": {"handlers": ["default"], "level": "INFO"},
         "uvicorn": {"handlers": ["default"], "level": "INFO"},
-
         "uvicorn.error": {
-            "handlers": ["system_handler"], 
-            "level": "INFO", 
+            "handlers": ["system_handler"],
+            "level": "INFO",
             "propagate": False
         },
-        "uvicorn.access": {"handlers": ["default"], "level": "INFO", "propagate": False},
+        "uvicorn.access": {"handlers": ["routes_handler"], "level": "INFO", "propagate": False},
     },
 }
 
@@ -65,13 +73,13 @@ async def lifespan(app: FastAPI):
     logger.info(f"Listen: {config.HOST}:{config.PORT}")
     logger.info(f"Target: {config.comfy_url}")
     logger.info(f"Cache:  {config.source_cache_dir.absolute()}")
-    
+
     is_up = await ComfyClient.check_health()
     if is_up:
         logger.info("Connection to ComfyUI established")
     else:
         logger.critical("Could not connect to ComfyUI! Make sure it is running.")
-        
+
     yield
     logger.info("Shutting down...")
 
@@ -95,8 +103,8 @@ class InpaintPayload(BaseModel):
 async def health():
     is_up = await ComfyClient.check_health()
     return {
-        "status": "ok" if is_up else "error", 
-        "comfy_url": config.comfy_url, 
+        "status": "ok" if is_up else "error",
+        "comfy_url": config.comfy_url,
         "connected": is_up
     }
 
@@ -104,14 +112,14 @@ async def health():
 async def upload_source(file: UploadFile = File(...), source_id: str = Form(...)):
     start_time = time.perf_counter()
     logger.info(f"Received upload request for {source_id}")
-    
+
     try:
         ext = os.path.splitext(file.filename)[1] or ".png"
         content = await file.read()
         logger.info(f"Read {len(content)} bytes from request")
-        
+
         path = await cache.add(source_id, content, ext)
-        
+
         logger.info(f"Upload completed in {time.perf_counter() - start_time:.4f}s")
         return {"status": "cached", "path": str(path.absolute())}
     except Exception as e:
@@ -131,10 +139,13 @@ async def inpaint(req: InpaintPayload):
     temp_mask_path = config.CACHE_DIR / f"mask_{uuid.uuid4()}.png"
 
     try:
-        logger.info("Decoding mask...")
         mask_bytes = base64.b64decode(req.mask_image_base64)
+        processed_mask_bytes = ImageProcessor.process_mask_for_comfyui(mask_bytes)
+
+        await save_inputs_for_debug(source_path, processed_mask_bytes)
+
         async with aiofiles.open(temp_mask_path, "wb") as f:
-            await f.write(mask_bytes)
+            await f.write(processed_mask_bytes)
 
         seed = req.seed or int(time.time())
         workflow = build_workflow(
@@ -144,12 +155,12 @@ async def inpaint(req: InpaintPayload):
             req.negative_prompt,
             seed
         )
-        
+
         client = ComfyClient()
         result_bytes = await client.execute(workflow)
 
         response = ImageProcessor.crop_and_pack(result_bytes, mask_bytes)
-        
+
         logger.info(f"Total Request Time: {time.perf_counter() - req_start:.4f}s")
         return response
 

@@ -36,6 +36,12 @@ class Settings(BaseSettings):
         return path
 
     @property
+    def sent_cache_dir(self) -> Path:
+        path = self.CACHE_DIR / "sent"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    @property
     def comfy_url(self) -> str:
         return f"{self.COMFY_HOST}:{self.COMFY_PORT}"
 
@@ -85,10 +91,10 @@ class SourceCache:
         self._enforce_limits()
         filename = f"{source_id}{extension}"
         filepath = config.source_cache_dir / filename
-        
+
         async with aiofiles.open(filepath, "wb") as f:
             await f.write(content)
-        
+
         self._map[source_id] = filepath
         self._map.move_to_end(source_id)
         logger.info(f"Successfully cached {source_id}")
@@ -123,10 +129,22 @@ cache = SourceCache()
 
 class ImageProcessor:
     @staticmethod
+    def process_mask_for_comfyui(mask_bytes: bytes) -> bytes:
+        logger.info("Processing mask to ComfyUI-compatible format (black w/ alpha channel)")
+        with Image.open(io.BytesIO(mask_bytes)) as mask_image:
+            grayscale_mask = mask_image.convert("L")
+            black_image = Image.new("RGB", grayscale_mask.size, (0, 0, 0))
+            black_image.putalpha(grayscale_mask)
+            
+            output_buffer = io.BytesIO()
+            black_image.save(output_buffer, format="PNG")
+            return output_buffer.getvalue()
+
+    @staticmethod
     def crop_and_pack(full_image_bytes: bytes, mask_bytes: bytes) -> Dict[str, Any]:
         logger.info("Processing output image: Cropping to mask area")
         start_time = time.perf_counter()
-        
+
         with Image.open(io.BytesIO(full_image_bytes)).convert("RGBA") as img:
             with Image.open(io.BytesIO(mask_bytes)).convert("L") as mask:
                 if img.size != mask.size:
@@ -153,7 +171,7 @@ class ImageProcessor:
                 xmax = min(width, xmax + pad + 1)
 
                 logger.info(f"Crop bounds: x={xmin}, y={ymin}, w={xmax-xmin}, h={ymax-ymin}")
-                
+
                 crop_box = (int(xmin), int(ymin), int(xmax), int(ymax))
                 img_crop = img.crop(crop_box)
                 mask_crop = mask.crop(crop_box)
@@ -167,7 +185,7 @@ class ImageProcessor:
             buf = io.BytesIO()
             i.save(buf, format="PNG")
             return base64.b64encode(buf.getvalue()).decode("utf-8")
-        
+
         return {
             "x": x, "y": y,
             "width": color.width, "height": color.height,
@@ -191,16 +209,16 @@ class ComfyClient:
     async def execute(self, workflow: dict) -> bytes:
         logger.info(f"Starting ComfyUI execution. Client ID: {self.client_id}")
         start_time = time.perf_counter()
-        
+
         async with aiohttp.ClientSession() as session:
             self.session = session
             try:
                 async with websockets.connect(f"{config.ws_url}?clientId={self.client_id}") as ws:
                     logger.info("WebSocket connected")
-                    
+
                     prompt_id = await self._queue_prompt(workflow)
                     logger.info(f"Prompt queued. ID: {prompt_id}")
-                    
+
                     while True:
                         msg = await ws.recv()
                         if isinstance(msg, str):
@@ -209,10 +227,10 @@ class ComfyClient:
                                 if data['data']['node'] is None and data['data']['prompt_id'] == prompt_id:
                                     logger.info("Execution finished signal received")
                                     break
-                    
+
                     history = await self._get_history(prompt_id)
                     image_data = await self._fetch_image(history[prompt_id]['outputs'])
-                    
+
                     logger.info(f"Workflow completed in {time.perf_counter() - start_time:.4f}s")
                     return image_data
             except (aiohttp.ClientError, websockets.exceptions.WebSocketException) as e:
@@ -252,6 +270,23 @@ class ComfyClient:
                     return await resp.read()
         raise Exception("No output images found in workflow response")
 
+async def save_inputs_for_debug(source_path: Path, mask_bytes: bytes):
+    try:
+        dest_img_path = config.sent_cache_dir / f"last_sent_image{source_path.suffix}"
+        dest_mask_path = config.sent_cache_dir / "last_sent_mask.png"
+
+        async with aiofiles.open(source_path, 'rb') as f_src:
+            content = await f_src.read()
+            async with aiofiles.open(dest_img_path, 'wb') as f_dst:
+                await f_dst.write(content)
+
+        async with aiofiles.open(dest_mask_path, "wb") as f:
+            await f.write(mask_bytes)
+
+        logger.info(f"Saved debug inputs to {config.sent_cache_dir.absolute()}")
+    except Exception as e:
+        logger.error(f"Failed to save debug inputs: {e}", exc_info=True)
+
 def build_workflow(source_path: str, mask_path: str, prompt: str, neg_prompt: str, seed: int) -> dict:
     if not config.WORKFLOW_FILE.exists():
         logger.error(f"Workflow file not found at {config.WORKFLOW_FILE.absolute()}")
@@ -265,18 +300,18 @@ def build_workflow(source_path: str, mask_path: str, prompt: str, neg_prompt: st
         raise ValueError("Workflow JSON is invalid")
 
     logger.info(f"Building workflow from {config.WORKFLOW_FILE}. Seed: {seed}")
-    
+
     try:
-        wf["3"]["inputs"]["seed"] = seed
-        wf["6"]["inputs"]["text"] = prompt
-        wf["7"]["inputs"]["text"] = neg_prompt
-        
+        wf["28"]["inputs"]["seed"] = seed
+        wf["7"]["inputs"]["text"] = prompt
+        wf["8"]["inputs"]["text"] = neg_prompt
+
         source = source_path.replace("\\", "/")
         mask = mask_path.replace("\\", "/")
-        
-        wf["11"]["inputs"]["image"] = source
-        wf["12"]["inputs"]["image"] = mask
-        
+
+        wf["30"]["inputs"]["image"] = source
+        wf["47"]["inputs"]["image"] = mask
+
         return wf
     except KeyError as e:
         logger.error(f"Workflow JSON missing expected node ID: {e}")

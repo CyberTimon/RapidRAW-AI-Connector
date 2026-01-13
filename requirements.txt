@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+pydantic-settings
+aiohttp
+websockets
+aiofiles
+numpy
+Pillow
