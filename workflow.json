@@ -242,6 +242,7 @@
   },
   "36": {
     "inputs": {
+      "device_mode" : "gpu (much faster)",
       "downscale_algorithm": "bilinear",
       "upscale_algorithm": "bicubic",
       "preresize": false,
