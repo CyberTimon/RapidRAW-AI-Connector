@@ -1,30 +1,35 @@
 {
   "1": {
     "inputs": {
-      "image": ""
+      "image": "image.png"
     },
     "class_type": "LoadImage"
   },
   "2": {
-    "inputs": {},
+    "inputs": {
+      "precision": "auto",
+      "compile": false
+    },
     "class_type": "LoadSAM3Model"
   },
   "8": {
     "inputs": {
+      "bboxes": "[]",
+      "neg_bboxes": "[]",
+      "canvas": "",
       "image": [
         "1",
         0
-      ],
-      "x1": 0,
-      "y1": 0,
-      "x2": 0,
-      "y2": 0
+      ]
     },
     "class_type": "SAM3BBoxCollector"
   },
   "22": {
     "inputs": {
-      "model": [
+      "confidence_threshold": 0.35,
+      "text_prompt": "subject",
+      "max_detections": -1,
+      "sam3_model_config": [
         "2",
         0
       ],
@@ -39,8 +44,7 @@
       "negative_boxes": [
         "8",
         1
-      ],
-      "text": "subject"
+      ]
     },
     "class_type": "SAM3Grounding"
   },

@@ -483,7 +483,7 @@ def _apply_best_effort_box_inputs(wf: dict, box_points: Optional[list], image_si
             elif key_lower == "bbox":
                 inputs[key] = bbox
             elif key_lower == "bboxes":
-                inputs[key] = bboxes
+                inputs[key] = json.dumps([{"x1": left, "y1": top, "x2": right, "y2": bottom}])
 
 def build_mask_workflow(
     mask_type: str,
