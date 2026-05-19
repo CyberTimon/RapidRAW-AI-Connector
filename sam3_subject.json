@@ -1,0 +1,65 @@
+{
+  "1": {
+    "inputs": {
+      "image": ""
+    },
+    "class_type": "LoadImage"
+  },
+  "2": {
+    "inputs": {},
+    "class_type": "LoadSAM3Model"
+  },
+  "8": {
+    "inputs": {
+      "image": [
+        "1",
+        0
+      ],
+      "x1": 0,
+      "y1": 0,
+      "x2": 0,
+      "y2": 0
+    },
+    "class_type": "SAM3BBoxCollector"
+  },
+  "22": {
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "positive_boxes": [
+        "8",
+        0
+      ],
+      "negative_boxes": [
+        "8",
+        1
+      ],
+      "text": "subject"
+    },
+    "class_type": "SAM3Grounding"
+  },
+  "23": {
+    "inputs": {
+      "mask": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "MaskToImage"
+  },
+  "24": {
+    "inputs": {
+      "images": [
+        "23",
+        0
+      ]
+    },
+    "class_type": "PreviewImage"
+  }
+}
