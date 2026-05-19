@@ -303,7 +303,7 @@ class ComfyClient:
                     if resp.status != 200:
                         raise Exception("Failed to download result image")
                     return await resp.read()
-        raise Exception("No output images found in workflow response")
+        raise Exception(f"No valid image output found for node {output_node_id or 'any'}")
 
 async def save_inputs_for_debug(source_path: Path, mask_bytes: bytes):
     try:
