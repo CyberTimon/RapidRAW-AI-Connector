@@ -8,7 +8,7 @@ import logging
 import shutil
 from pathlib import Path
 from collections import OrderedDict
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Tuple
 
 import aiohttp
 import aiofiles
@@ -19,6 +19,12 @@ from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("Engine")
 
+DEFAULT_SAM3_SUBJECT_WORKFLOW_FILES = [Path("sam3_subject.json"), Path("sam3_workflow.json")]
+DEFAULT_SAM3_OUTPUT_NODES = {
+    "sam3_subject.json": "24",
+    "sam3_workflow.json": "11",
+}
+
 class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 5000
@@ -26,6 +32,16 @@ class Settings(BaseSettings):
     COMFY_PORT: int = 5545
     CACHE_DIR: Path = Path("./cache")
     WORKFLOW_FILE: Path = Path("workflow.json")
+    SUBJECT_MASK_WORKFLOW_FILE: Optional[Path] = None
+    FOREGROUND_MASK_WORKFLOW_FILE: Optional[Path] = None
+    SKY_MASK_WORKFLOW_FILE: Optional[Path] = None
+    DEPTH_MASK_WORKFLOW_FILE: Optional[Path] = None
+    SUBJECT_MASK_WORKFLOW_OVERRIDES: Optional[str] = None
+    FOREGROUND_MASK_WORKFLOW_OVERRIDES: Optional[str] = None
+    SKY_MASK_WORKFLOW_OVERRIDES: Optional[str] = None
+    DEPTH_MASK_WORKFLOW_OVERRIDES: Optional[str] = None
+    MASK_LOAD_IMAGE_NODE_ID: Optional[str] = None
+    MASK_OUTPUT_NODE_ID: Optional[str] = None
     MAX_CACHE_FILES: int = 20
     MAX_CACHE_SIZE_MB: int = 2048
 
@@ -141,6 +157,18 @@ class ImageProcessor:
             return output_buffer.getvalue()
 
     @staticmethod
+    def mask_to_base64(mask_bytes: bytes, target_size: Tuple[int, int]) -> str:
+        with Image.open(io.BytesIO(mask_bytes)) as mask_image:
+            grayscale_mask = mask_image.convert("L")
+            if grayscale_mask.size != target_size:
+                logger.warning(f"Resizing mask from {grayscale_mask.size} to {target_size}")
+                grayscale_mask = grayscale_mask.resize(target_size, Image.BILINEAR)
+
+            output_buffer = io.BytesIO()
+            grayscale_mask.save(output_buffer, format="PNG")
+            return base64.b64encode(output_buffer.getvalue()).decode("utf-8")
+
+    @staticmethod
     def crop_and_pack(full_image_bytes: bytes, mask_bytes: bytes) -> Dict[str, Any]:
         logger.info("Processing output image: Cropping to mask area")
         start_time = time.perf_counter()
@@ -206,14 +234,14 @@ class ComfyClient:
         except Exception:
             return False
 
-    async def execute(self, workflow: dict) -> bytes:
+    async def execute(self, workflow: dict, output_node_id: Optional[str] = None) -> bytes:
         logger.info(f"Starting ComfyUI execution. Client ID: {self.client_id}")
         start_time = time.perf_counter()
 
         async with aiohttp.ClientSession() as session:
             self.session = session
             try:
-                async with websockets.connect(f"{config.ws_url}?clientId={self.client_id}") as ws:
+                async with websockets.connect(f"{config.ws_url}?clientId={self.client_id}", max_size=None) as ws:
                     logger.info("WebSocket connected")
 
                     prompt_id = await self._queue_prompt(workflow)
@@ -229,7 +257,7 @@ class ComfyClient:
                                     break
 
                     history = await self._get_history(prompt_id)
-                    image_data = await self._fetch_image(history[prompt_id]['outputs'])
+                    image_data = await self._fetch_image(history[prompt_id]['outputs'], output_node_id)
 
                     logger.info(f"Workflow completed in {time.perf_counter() - start_time:.4f}s")
                     return image_data
@@ -254,11 +282,18 @@ class ComfyClient:
         async with self.session.get(f"{config.http_url}/history/{prompt_id}") as resp:
             return await resp.json()
 
-    async def _fetch_image(self, outputs: dict) -> bytes:
-        for node_id, node_output in outputs.items():
+    async def _fetch_image(self, outputs: dict, output_node_id: Optional[str] = None) -> bytes:
+        if output_node_id:
+            if output_node_id not in outputs:
+                raise Exception(f"Output node {output_node_id} not found in workflow response")
+            search_outputs = [(output_node_id, outputs[output_node_id])]
+        else:
+            search_outputs = outputs.items()
+
+        for node_id, node_output in search_outputs:
             if 'images' in node_output:
                 img_meta = node_output['images'][0]
-                logger.info(f"Fetching result image: {img_meta['filename']}")
+                logger.info(f"Fetching result image from node {node_id}: {img_meta['filename']}")
                 params = {
                     "filename": img_meta['filename'],
                     "subfolder": img_meta['subfolder'],
@@ -268,7 +303,7 @@ class ComfyClient:
                     if resp.status != 200:
                         raise Exception("Failed to download result image")
                     return await resp.read()
-        raise Exception("No output images found in workflow response")
+        raise Exception(f"No valid image output found for node {output_node_id or 'any'}")
 
 async def save_inputs_for_debug(source_path: Path, mask_bytes: bytes):
     try:
@@ -316,3 +351,186 @@ def build_workflow(source_path: str, mask_path: str, prompt: str, neg_prompt: st
     except KeyError as e:
         logger.error(f"Workflow JSON missing expected node ID: {e}")
         raise ValueError(f"Workflow JSON missing node: {e}")
+
+def _mask_workflow_file(mask_type: str) -> Path:
+    configured = {
+        "subject": config.SUBJECT_MASK_WORKFLOW_FILE,
+        "foreground": config.FOREGROUND_MASK_WORKFLOW_FILE,
+        "sky": config.SKY_MASK_WORKFLOW_FILE,
+        "depth": config.DEPTH_MASK_WORKFLOW_FILE,
+    }.get(mask_type)
+
+    if configured:
+        return configured
+
+    if mask_type == "subject":
+        for candidate in DEFAULT_SAM3_SUBJECT_WORKFLOW_FILES:
+            if candidate.exists():
+                return candidate
+        return DEFAULT_SAM3_SUBJECT_WORKFLOW_FILES[0]
+
+    raise FileNotFoundError(f"No workflow configured for {mask_type} masks")
+
+def _mask_workflow_overrides(mask_type: str) -> Optional[str]:
+    return {
+        "subject": config.SUBJECT_MASK_WORKFLOW_OVERRIDES,
+        "foreground": config.FOREGROUND_MASK_WORKFLOW_OVERRIDES,
+        "sky": config.SKY_MASK_WORKFLOW_OVERRIDES,
+        "depth": config.DEPTH_MASK_WORKFLOW_OVERRIDES,
+    }.get(mask_type)
+
+def _find_load_image_node_id(wf: dict) -> str:
+    if config.MASK_LOAD_IMAGE_NODE_ID:
+        if config.MASK_LOAD_IMAGE_NODE_ID not in wf:
+            raise ValueError(f"MASK_LOAD_IMAGE_NODE_ID {config.MASK_LOAD_IMAGE_NODE_ID} not found in workflow")
+        return config.MASK_LOAD_IMAGE_NODE_ID
+
+    for node_id, node in wf.items():
+        if node.get("class_type") == "LoadImage":
+            return node_id
+
+    raise ValueError("Workflow does not contain a LoadImage node")
+
+def _format_override_value(value: Any, placeholders: Dict[str, Any]) -> Any:
+    if isinstance(value, str):
+        if value.startswith("{") and value.endswith("}") and value[1:-1] in placeholders:
+            return placeholders[value[1:-1]]
+        formatted = value
+        for key, replacement in placeholders.items():
+            formatted = formatted.replace(f"{{{key}}}", str(replacement))
+        return formatted
+    if isinstance(value, list):
+        return [_format_override_value(item, placeholders) for item in value]
+    if isinstance(value, dict):
+        return {k: _format_override_value(v, placeholders) for k, v in value.items()}
+    return value
+
+def _set_nested_value(target: dict, path: str, value: Any):
+    normalized = path.replace("/", ".")
+    parts = [part for part in normalized.split(".") if part]
+    if not parts:
+        return
+
+    current = target
+    for part in parts[:-1]:
+        if isinstance(current, list):
+            current = current[int(part)]
+        else:
+            current = current.setdefault(part, {})
+
+    last = parts[-1]
+    if isinstance(current, list):
+        current[int(last)] = value
+    else:
+        current[last] = value
+
+def _apply_mask_workflow_overrides(wf: dict, mask_type: str, placeholders: Dict[str, Any]):
+    overrides_raw = _mask_workflow_overrides(mask_type)
+    if not overrides_raw:
+        return
+
+    try:
+        overrides = json.loads(overrides_raw)
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Invalid {mask_type} mask workflow overrides JSON: {e}") from e
+
+    if not isinstance(overrides, dict):
+        raise ValueError(f"{mask_type} mask workflow overrides must be a JSON object")
+
+    for path, value in overrides.items():
+        _set_nested_value(wf, path, _format_override_value(value, placeholders))
+
+def _apply_best_effort_box_inputs(wf: dict, box_points: Optional[list], image_size: Tuple[int, int]):
+    if not box_points or len(box_points) < 4:
+        return
+
+    width, height = image_size
+    x1 = max(0.0, min(float(box_points[0]), float(width)))
+    y1 = max(0.0, min(float(box_points[1]), float(height)))
+    x2 = max(0.0, min(float(box_points[2]), float(width)))
+    y2 = max(0.0, min(float(box_points[3]), float(height)))
+    left, right = sorted((x1, x2))
+    top, bottom = sorted((y1, y2))
+    box_width = right - left
+    box_height = bottom - top
+
+    scalar_values = {
+        "x1": left,
+        "y1": top,
+        "x2": right,
+        "y2": bottom,
+        "left": left,
+        "top": top,
+        "right": right,
+        "bottom": bottom,
+        "x": left,
+        "y": top,
+        "width": box_width,
+        "height": box_height,
+    }
+    bbox = [left, top, right, bottom]
+    bboxes = [bbox]
+
+    for node in wf.values():
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+
+        for key in list(inputs.keys()):
+            key_lower = key.lower()
+            if key_lower in scalar_values:
+                inputs[key] = scalar_values[key_lower]
+            elif key_lower == "bbox":
+                inputs[key] = bbox
+            elif key_lower == "bboxes":
+                inputs[key] = json.dumps([{"x1": left, "y1": top, "x2": right, "y2": bottom}])
+
+def build_mask_workflow(
+    mask_type: str,
+    source_path: str,
+    image_size: Tuple[int, int],
+    box_points: Optional[list],
+    prompt: Optional[str],
+) -> Tuple[dict, Optional[str]]:
+    workflow_file = _mask_workflow_file(mask_type)
+    if not workflow_file.exists():
+        logger.error(f"Mask workflow file not found at {workflow_file.absolute()}")
+        raise FileNotFoundError(f"Mask workflow JSON file is missing: {workflow_file}")
+
+    try:
+        with open(workflow_file, "r") as f:
+            wf = json.load(f)
+    except json.JSONDecodeError as e:
+        logger.error(f"Invalid JSON in mask workflow file: {e}")
+        raise ValueError("Mask workflow JSON is invalid") from e
+
+    logger.info(f"Building {mask_type} mask workflow from {workflow_file}")
+
+    source = source_path.replace("\\", "/")
+    load_image_node_id = _find_load_image_node_id(wf)
+    wf[load_image_node_id].setdefault("inputs", {})["image"] = source
+    _apply_best_effort_box_inputs(wf, box_points, image_size)
+
+    x1 = y1 = x2 = y2 = 0.0
+    if box_points and len(box_points) >= 4:
+        x1, y1, x2, y2 = [float(v) for v in box_points[:4]]
+    left, right = sorted((x1, x2))
+    top, bottom = sorted((y1, y2))
+
+    placeholders = {
+        "source": source,
+        "mask_type": mask_type,
+        "prompt": prompt or mask_type,
+        "x1": left,
+        "y1": top,
+        "x2": right,
+        "y2": bottom,
+        "width": image_size[0],
+        "height": image_size[1],
+        "box_width": right - left,
+        "box_height": bottom - top,
+    }
+    _apply_mask_workflow_overrides(wf, mask_type, placeholders)
+
+    output_node_id = config.MASK_OUTPUT_NODE_ID or DEFAULT_SAM3_OUTPUT_NODES.get(workflow_file.name)
+    return wf, output_node_id

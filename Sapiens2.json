@@ -1,0 +1,128 @@
+{
+  "37": {
+    "inputs": {
+      "keep_all": false,
+      "Background": false,
+      "Apparel": false,
+      "Eyeglass": false,
+      "Face_Neck": false,
+      "Hair": true,
+      "Left_Foot": false,
+      "Left_Hand": false,
+      "Left_Lower_Arm": false,
+      "Left_Lower_Leg": false,
+      "Left_Shoe": false,
+      "Left_Sock": false,
+      "Left_Upper_Arm": false,
+      "Left_Upper_Leg": true,
+      "Lower_Clothing": false,
+      "Right_Foot": false,
+      "Right_Hand": false,
+      "Right_Lower_Arm": false,
+      "Right_Lower_Leg": false,
+      "Right_Shoe": false,
+      "Right_Sock": false,
+      "Right_Upper_Arm": false,
+      "Right_Upper_Leg": false,
+      "Torso": false,
+      "Upper_Clothing": false,
+      "Lower_Lip": false,
+      "Upper_Lip": false,
+      "Lower_Teeth": false,
+      "Upper_Teeth": false,
+      "Tongue": false
+    },
+    "class_type": "SapiensSplit",
+    "_meta": {
+      "title": "SapiensSplit"
+    }
+  },
+  "39": {
+    "inputs": {
+      "image": "DSC01882.jpg"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "Load Image"
+    }
+  },
+  "42": {
+    "inputs": {
+      "images": [
+        "44",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  },
+  "43": {
+    "inputs": {
+      "seg": "sapiens2_0.4b_seg.safetensors",
+      "depth": "none",
+      "normal": "none",
+      "pose": "none",
+      "pointmap": "none",
+      "albedo": "none",
+      "dtype": "float32",
+      "mini_person_h": 0.5,
+      "show_pose_object": false,
+      "convert_torchscript": false,
+      "V2": true
+    },
+    "class_type": "SapiensLoader",
+    "_meta": {
+      "title": "SapiensLoader"
+    }
+  },
+  "44": {
+    "inputs": {
+      "save_pose": false,
+      "BG_R": 255,
+      "BG_G": 255,
+      "BG_B": 255,
+      "model": [
+        "43",
+        0
+      ],
+      "image": [
+        "39",
+        0
+      ],
+      "cond": [
+        "37",
+        0
+      ]
+    },
+    "class_type": "SapiensSampler",
+    "_meta": {
+      "title": "SapiensSampler"
+    }
+  },
+  "45": {
+    "inputs": {
+      "mask": [
+        "44",
+        6
+      ]
+    },
+    "class_type": "MaskToImage",
+    "_meta": {
+      "title": "Convert Mask to Image"
+    }
+  },
+  "46": {
+    "inputs": {
+      "images": [
+        "45",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "Preview Image"
+    }
+  }
+}

@@ -7,10 +7,19 @@ import logging.config
 import asyncio
 import aiofiles
 from contextlib import asynccontextmanager
+from PIL import Image
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from engine import config, cache, ComfyClient, ImageProcessor, build_workflow, save_inputs_for_debug
+from engine import (
+    config,
+    cache,
+    ComfyClient,
+    ImageProcessor,
+    build_workflow,
+    build_mask_workflow,
+    save_inputs_for_debug,
+)
 
 class EndpointFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -99,6 +108,12 @@ class InpaintPayload(BaseModel):
     mask_image_base64: str
     seed: int = 0
 
+class MaskPayload(BaseModel):
+    source_id: str
+    mask_type: str
+    box_points: list[float] | None = None
+    prompt: str | None = None
+
 @app.get("/health")
 async def health():
     is_up = await ComfyClient.check_health()
@@ -176,6 +191,52 @@ async def inpaint(req: InpaintPayload):
                 os.remove(temp_mask_path)
             except Exception as e:
                 logger.error(f"Failed to cleanup mask {temp_mask_path}: {e}")
+
+@app.post("/mask")
+async def mask(req: MaskPayload):
+    req_start = time.perf_counter()
+    mask_type = req.mask_type.strip().lower()
+    logger.info(f"Mask Request | Source: {req.source_id} | Type: {mask_type}")
+
+    if mask_type not in {"subject", "foreground", "sky", "depth"}:
+        raise HTTPException(400, "mask_type must be one of subject, foreground, sky, depth")
+
+    source_path = cache.get(req.source_id)
+    if not source_path:
+        logger.warning(f"Source {req.source_id} not found in cache. Returning 404.")
+        raise HTTPException(404, "Source ID not found. Upload required.")
+
+    try:
+        with Image.open(source_path) as source_image:
+            image_size = source_image.size
+
+        workflow, output_node_id = build_mask_workflow(
+            mask_type,
+            str(source_path.absolute()),
+            image_size,
+            req.box_points,
+            req.prompt,
+        )
+
+        client = ComfyClient()
+        result_bytes = await client.execute(workflow, output_node_id=output_node_id)
+        mask_base64 = ImageProcessor.mask_to_base64(result_bytes, image_size)
+
+        logger.info(f"Total Mask Request Time: {time.perf_counter() - req_start:.4f}s")
+        return {"mask": mask_base64}
+
+    except ConnectionError as ce:
+        logger.error(f"ComfyUI Unavailable: {ce}")
+        raise HTTPException(502, f"ComfyUI Unavailable: {str(ce)}")
+    except FileNotFoundError as fe:
+        logger.error(f"Mask workflow missing: {fe}")
+        raise HTTPException(501, str(fe))
+    except ValueError as ve:
+        logger.error(f"Mask workflow invalid: {ve}", exc_info=True)
+        raise HTTPException(501, str(ve))
+    except Exception as e:
+        logger.error(f"Mask processing failed: {e}", exc_info=True)
+        raise HTTPException(500, f"Processing error: {str(e)}")
 
 if __name__ == "__main__":
     import uvicorn

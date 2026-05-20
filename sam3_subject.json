@@ -1,0 +1,69 @@
+{
+  "1": {
+    "inputs": {
+      "image": "image.png"
+    },
+    "class_type": "LoadImage"
+  },
+  "2": {
+    "inputs": {
+      "precision": "auto",
+      "compile": false
+    },
+    "class_type": "LoadSAM3Model"
+  },
+  "8": {
+    "inputs": {
+      "bboxes": "[]",
+      "neg_bboxes": "[]",
+      "canvas": "",
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "SAM3BBoxCollector"
+  },
+  "22": {
+    "inputs": {
+      "confidence_threshold": 0.35,
+      "text_prompt": "subject",
+      "max_detections": -1,
+      "sam3_model_config": [
+        "2",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "positive_boxes": [
+        "8",
+        0
+      ],
+      "negative_boxes": [
+        "8",
+        1
+      ]
+    },
+    "class_type": "SAM3Grounding"
+  },
+  "23": {
+    "inputs": {
+      "mask": [
+        "22",
+        0
+      ]
+    },
+    "class_type": "MaskToImage"
+  },
+  "24": {
+    "inputs": {
+      "images": [
+        "23",
+        0
+      ]
+    },
+    "class_type": "PreviewImage"
+  }
+}
