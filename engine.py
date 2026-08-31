@@ -293,7 +293,7 @@ def build_workflow(source_path: str, mask_path: str, prompt: str, neg_prompt: st
         raise FileNotFoundError("Workflow JSON file is missing")
 
     try:
-        with open(config.WORKFLOW_FILE, "r") as f:
+        with open(config.WORKFLOW_FILE, "r", encoding="utf-8") as f:
             wf = json.load(f)
     except json.JSONDecodeError as e:
         logger.error(f"Invalid JSON in workflow file: {e}")
